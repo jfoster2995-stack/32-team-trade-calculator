@@ -249,7 +249,7 @@ export default function TradeCalculatorApp() {
       },
       error: (e) => console.error("Failed to load /values.csv", e),
     });
-  }, []);
+  }, [csvUrl]);
 
   // All assets list
   const allAssets = useMemo(() => {
