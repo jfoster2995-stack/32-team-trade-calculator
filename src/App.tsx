@@ -205,10 +205,12 @@ export default function TradeCalculatorApp() {
   // Sides
   const [sideA, setSideA] = useState<SideItem[]>([]);
   const [sideB, setSideB] = useState<SideItem[]>([]);
+  
+  const csvUrl = new URL("values.csv", import.meta.env.BASE_URL).href;
 
   // Load your single CSV at startup (public/values.csv)
   useEffect(() => {
-    Papa.parse("/values.csv", {
+    Papa.parse(csvUrl, {
       download: true,
       header: true,
       skipEmptyLines: true,
@@ -248,7 +250,7 @@ export default function TradeCalculatorApp() {
       },
       error: (e) => console.error("Failed to load /values.csv", e),
     });
-  }, []);
+  }, [csvUrl]);
 
   // All assets list
   const allAssets = useMemo(() => {
