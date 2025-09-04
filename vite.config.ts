@@ -1,9 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-const repo = '32-team-trade-calculator'; // <-- your exact repo name
-
-export default defineConfig(({ mode }) => ({
+export default defineConfig({
   plugins: [react()],
-  base: mode === 'production' ? `/${repo}/` : '/',  // dev = '/', prod = '/repo/'
-}));
+  base: '/',  // Always use root when deploying to a custom domain
+});
