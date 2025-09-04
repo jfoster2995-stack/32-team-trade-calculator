@@ -205,8 +205,9 @@ export default function TradeCalculatorApp() {
   // Sides
   const [sideA, setSideA] = useState<SideItem[]>([]);
   const [sideB, setSideB] = useState<SideItem[]>([]);
-  
-  const csvUrl = new URL("values.csv", import.meta.env.BASE_URL).href;
+
+const base = import.meta.env.BASE_URL || "/";
+const csvUrl = new URL("values.csv", window.location.origin + base).href;
 
   // Load your single CSV at startup (public/values.csv)
   useEffect(() => {

@@ -1,8 +1,9 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
 
-// Replace "your-username" and "repo-name" with your actual repo details
-export default defineConfig({
+const repo = '32-team-trade-calculator'; // <-- your exact repo name
+
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
-  base: "/32-team-trade-calculator/",  
-})
+  base: mode === 'production' ? `/${repo}/` : '/',  // dev = '/', prod = '/repo/'
+}));
