@@ -156,7 +156,8 @@ function gradeFromEdge(edgePct: number): string {
 type Asset = { kind: "player" | "pick"; id: string; label: string; val: number };
 
 function toAssetFromPlayer(p: any): Asset {
-  const id = String(p?.uid ?? p?.player_id ?? p?.sleeper_id ?? p?.id ?? crypto.randomUUID());
+  const sid = String(p?.uid ?? p?.player_id ?? p?.sleeper_id ?? p?.id ?? "");
+  const id = `player:${sid}`;
   const label = String(p?.name ?? p?.full_name ?? p?.Name ?? "Unknown");
   const val = num(p?.value_final_1000);
   return { kind: "player", id, label, val };
@@ -200,6 +201,38 @@ export default function TradeCalculatorPage() {
   // UI
   const [loading, setLoading] = useState<boolean>(false);
   const [status, setStatus] = useState<string>("");
+
+  // FIXED: keep hidden keys INSIDE component (hooks must be in component body)
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
+
+  // Keys for rows (so list filtering matches the asset IDs)
+  const keyFromPlayerRow = useCallback((v: ValueRow) => {
+    const sid = String(v?.sleeper_id ?? (v as any)?.id ?? v?.uid ?? "");
+    return `player:${sid}`;
+  }, []);
+  const keyFromPickRow = useCallback((pk: any) => {
+    const label = String(pk?.display ?? pickLabelFrom(pk, slotProjection));
+    return `pick:${label}`;
+  }, [slotProjection]);
+
+  // Hide/show helpers that operate on Asset IDs
+  const hideAsset = useCallback((asset: Asset) => {
+    setHiddenIds(prev => {
+      if (prev.has(asset.id)) return prev;
+      const next = new Set(prev);
+      next.add(asset.id);
+      return next;
+    });
+  }, []);
+
+  const unhideById = useCallback((id: string) => {
+    setHiddenIds(prev => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
 
   // Persist last-used
   useEffect(() => {
@@ -275,6 +308,7 @@ export default function TradeCalculatorPage() {
       setTradedPicks(tp);
       setStatus("Ready");
       setSideA([]); setSideB([]);
+      setHiddenIds(new Set()); // reset hidden on new submit
     } catch (e: any) {
       console.error(e);
       setStatus("Failed to load league data");
@@ -293,11 +327,9 @@ export default function TradeCalculatorPage() {
     const map: Record<string, string> = {};
     if (!Array.isArray(rosters) || rosters.length === 0) return map;
 
-    // Helpful set of team-like strings to accept quickly
     const isTeamCode = (x: unknown) =>
       typeof x === "string" && /^[A-Z]{2,3}$/.test(x);
 
-    // Quick value lookup (fallback #3)
     const valueById = new Map<string, any>(
       (values ?? []).map((row: any) => [
         String(row?.sleeper_id ?? row?.id ?? row?.player_id ?? row?.uid ?? ""),
@@ -311,14 +343,12 @@ export default function TradeCalculatorPage() {
 
       const ids: any[] = Array.isArray(r.players) ? r.players : [];
 
-      // Pass 1: direct team code sitting in roster.players (e.g., "NE")
       const direct = ids.find((pid) => isTeamCode(pid));
       if (isTeamCode(direct)) {
         map[rid] = String(direct);
         continue;
       }
 
-      // Pass 2: look in Sleeper players map for a DEF entry
       for (const pid of ids) {
         const meta = playersMeta?.[String(pid)];
         if (meta?.position === "DEF") {
@@ -331,7 +361,6 @@ export default function TradeCalculatorPage() {
       }
       if (map[rid]) continue;
 
-      // Pass 3 (fallback): search your values rows for a DEF
       const defRow = ids
         .map((pid) => valueById.get(String(pid)))
         .find((row) => String(row?.Pos ?? row?.positions ?? "").includes("DEF"));
@@ -345,23 +374,24 @@ export default function TradeCalculatorPage() {
 
     return map;
   }, [rosters, playersMeta, values]);
-  
+
   const ownerByPlayerId = useMemo(() => {
-  const m: Record<string, number> = {};
-  for (const r of rosters ?? []) {
-    const list = Array.isArray(r.players) ? r.players : [];
-    for (const pid of list) m[String(pid)] = r.roster_id;
-  }
-  return m;
-}, [rosters]);
+    const m: Record<string, number> = {};
+    for (const r of rosters ?? []) {
+      const list = Array.isArray(r.players) ? r.players : [];
+      for (const pid of list) m[String(pid)] = r.roster_id;
+    }
+    return m;
+  }, [rosters]);
+
   // All players & my players (raw)
   const allPlayersForTables = useMemo(() => {
-  return (values ?? []).map((v) => {
-    const id = String(v?.sleeper_id ?? (v as any)?.id ?? v?.uid ?? "");
-    const owner_roster_id = ownerByPlayerId[id] ?? null; // null = FA / unknown
-    return { ...v, owner_roster_id };
-  });
-}, [values, ownerByPlayerId]);
+    return (values ?? []).map((v) => {
+      const id = String(v?.sleeper_id ?? (v as any)?.id ?? v?.uid ?? "");
+      const owner_roster_id = ownerByPlayerId[id] ?? null; // null = FA / unknown
+      return { ...v, owner_roster_id };
+    });
+  }, [values, ownerByPlayerId]);
 
   const myPlayersForTables = useMemo(() => {
     if (!myRoster || !Array.isArray(myRoster.players)) return [];
@@ -388,7 +418,6 @@ export default function TradeCalculatorPage() {
         display,
         value: pickValueMap[display] ?? 0,
 
-        // these drive "Owned by / From"
         owner_roster_id: Number(pk?.owner_id ?? pk?.owner_roster_id ?? NaN), // current holder
         roster_id: Number(pk?.roster_id ?? NaN),                              // origin
       };
@@ -409,7 +438,7 @@ export default function TradeCalculatorPage() {
   }, [owned, toPickRow]);
 
   /* ----------------------
-     NEW: Filters
+     Filters
   ----------------------- */
 
   // My row filters (search + position + value)
@@ -429,7 +458,6 @@ export default function TradeCalculatorPage() {
   const matchPos = (row: any, sel: string) => {
     if (sel === "all") return true;
     const pos = String(row?.Pos ?? "");
-    // match "DL" inside "DL" or "DL/LB" etc.
     return pos.split("/").some((p) => p.trim() === sel) || pos.includes(sel);
   };
   const matchSearchPlayer = (row: any, q: string) => {
@@ -451,7 +479,7 @@ export default function TradeCalculatorPage() {
     return String(ownerRosterId ?? "") === sel;
   };
 
-  // Apply filters
+  // Apply base filters
   const myPlayersFiltered = useMemo(
     () =>
       myPlayersForTables.filter(
@@ -467,7 +495,7 @@ export default function TradeCalculatorPage() {
     () =>
       myPicksForTables.filter((pk) =>
         matchVal(pk?.value, myValMin, myValMax)
-      ).filter((pk) => matchSearchPick(pk, mySearch)), // let search work on picks too
+      ).filter((pk) => matchSearchPick(pk, mySearch)),
     [myPicksForTables, mySearch, myValMin, myValMax]
   );
 
@@ -478,7 +506,6 @@ export default function TradeCalculatorPage() {
           matchSearchPlayer(p, allSearch) &&
           matchPos(p, allPos) &&
           matchVal(p?.value_final_1000, allValMin, allValMax) &&
-          // If a player row has an owner_roster_id, respect team filter; otherwise no-op
           matchTeamByOwner((p as any)?.owner_roster_id, allTeamRosterId)
       ),
     [allPlayersForTables, allSearch, allPos, allValMin, allValMax, allTeamRosterId]
@@ -493,32 +520,34 @@ export default function TradeCalculatorPage() {
     [allPicksForTables, allSearch, allValMin, allValMax, allTeamRosterId]
   );
 
+  // FIXED: Apply hidden-ids on top of filtered sets so Send/Receive removes from lists
+  const myPlayersVisible = useMemo(
+    () => myPlayersFiltered.filter((p) => !hiddenIds.has(keyFromPlayerRow(p))),
+    [myPlayersFiltered, hiddenIds, keyFromPlayerRow]
+  );
+  const myPicksVisible = useMemo(
+    () => myPicksFiltered.filter((pk) => !hiddenIds.has(keyFromPickRow(pk))),
+    [myPicksFiltered, hiddenIds, keyFromPickRow]
+  );
+  const allPlayersVisible = useMemo(
+    () => allPlayersFiltered.filter((p) => !hiddenIds.has(keyFromPlayerRow(p))),
+    [allPlayersFiltered, hiddenIds, keyFromPlayerRow]
+  );
+  const allPicksVisible = useMemo(
+    () => allPicksFiltered.filter((pk) => !hiddenIds.has(keyFromPickRow(pk))),
+    [allPicksFiltered, hiddenIds, keyFromPickRow]
+  );
+
   // Build options for Team (Sleeper roster) filter
   const teamOptions = useMemo(() => {
-    // roster_id -> code (e.g., "KC")
     return Object.entries(rosterDefById)
       .map(([rid, code]) => ({ rid, code }))
       .sort((a, b) => a.code.localeCompare(b.code));
   }, [rosterDefById]);
 
   /* ----------------------
-     Trade math & handlers (unchanged)
+     Trade math & handlers
   ----------------------- */
-  type Asset = { kind: "player" | "pick"; id: string; label: string; val: number };
-  const addToSideA = useCallback((asset: Asset) => {
-    setSideA((prev) => (prev.find((a) => a.kind === asset.kind && a.id === asset.id) ? prev : [...prev, asset]));
-    setSideB((prev) => prev.filter((a) => !(a.kind === asset.kind && a.id === asset.id)));
-  }, []);
-  const addToSideB = useCallback((asset: Asset) => {
-    setSideB((prev) => (prev.find((a) => a.kind === asset.kind && a.id === asset.id) ? prev : [...prev, asset]));
-    setSideA((prev) => prev.filter((a) => !(a.kind === asset.kind && a.id === asset.id)));
-  }, []);
-  const removeFromSide = useCallback((side: "A" | "B", id: string) => {
-    if (side === "A") setSideA((prev) => prev.filter((a) => a.id !== id));
-    else setSideB((prev) => prev.filter((a) => a.id !== id));
-  }, []);
-  const clearAll = useCallback(() => { setSideA([]); setSideB([]); }, []);
-
   const sideTotal = (assets: Asset[]) => assets.reduce((sum, a) => sum + num(a?.val), 0);
   const sideATotal = useMemo(() => sideTotal(sideA), [sideA]);
   const sideBTotal = useMemo(() => sideTotal(sideB), [sideB]);
@@ -529,20 +558,54 @@ export default function TradeCalculatorPage() {
   }, [edge, sideATotal, sideBTotal]);
   const letter = useMemo(() => gradeFromEdge(edgePct), [edgePct]);
 
-  const onReceivePlayer = useCallback((p: any) => addToSideA(toAssetFromPlayer(p)), []);
-  const onSendPlayer    = useCallback((p: any) => addToSideB(toAssetFromPlayer(p)), []);
-  const onReceivePick   = useCallback((pk: any) => addToSideA(toAssetFromPick(pk, pickValuesToMap(pickValues), slotProjection)), [pickValues, slotProjection]);
-  const onSendPick      = useCallback((pk: any) => addToSideB(toAssetFromPick(pk, pickValuesToMap(pickValues), slotProjection)), [pickValues, slotProjection]);
-  
+  const onReceivePlayer = useCallback((p: any) => {
+    const a = toAssetFromPlayer(p);
+    setSideA((prev) => (prev.find((x) => x.id === a.id) ? prev : [...prev, a]));
+    setSideB((prev) => prev.filter((x) => x.id !== a.id));
+    hideAsset(a); // hide from source lists
+  }, [hideAsset]);
+
+  const onSendPlayer = useCallback((p: any) => {
+    const a = toAssetFromPlayer(p);
+    setSideB((prev) => (prev.find((x) => x.id === a.id) ? prev : [...prev, a]));
+    setSideA((prev) => prev.filter((x) => x.id !== a.id));
+    hideAsset(a); // hide from source lists
+  }, [hideAsset]);
+
+  const onReceivePick = useCallback((pk: any) => {
+    const a = toAssetFromPick(pk, pickValueMap, slotProjection);
+    setSideA((prev) => (prev.find((x) => x.id === a.id) ? prev : [...prev, a]));
+    setSideB((prev) => prev.filter((x) => x.id !== a.id));
+    hideAsset(a);
+  }, [pickValueMap, slotProjection, hideAsset]);
+
+  const onSendPick = useCallback((pk: any) => {
+    const a = toAssetFromPick(pk, pickValueMap, slotProjection);
+    setSideB((prev) => (prev.find((x) => x.id === a.id) ? prev : [...prev, a]));
+    setSideA((prev) => prev.filter((x) => x.id !== a.id));
+    hideAsset(a);
+  }, [pickValueMap, slotProjection, hideAsset]);
+
+  // FIXED: pass BOTH side and id; also unhide by id so the asset returns to lists
+  const removeFromSide = useCallback((side: "A" | "B", id: string) => {
+    if (side === "A") setSideA((prev) => prev.filter((a) => a.id !== id));
+    else setSideB((prev) => prev.filter((a) => a.id !== id));
+    unhideById(id); // show back in source lists
+  }, [unhideById]);
+
+  const clearAll = useCallback(() => {
+    setSideA([]);
+    setSideB([]);
+    setHiddenIds(new Set()); // reveal everything again
+  }, []);
 
   /* ----------------------
      RENDER
-     (Header & controls UNCHANGED; just inserting 2 filter rows)
-  ----------------------- */
+----------------------- */
 
   return (
     <div className="max-w-5xl mx-auto px-3 py-4">
-      {/* Header / Controls (unchanged) */}
+      {/* Header / Controls */}
       <div className="flex items-start justify-between mb-6">
         <div>
           <h1 className="text-3xl font-bold">
@@ -621,7 +684,7 @@ export default function TradeCalculatorPage() {
         </div>
       </div>
 
-      {/* ---------------- FILTER ROW #1 (Red line): My Players + My Picks ---------------- */}
+      {/* ---------------- FILTER ROW #1: My Players + My Picks ---------------- */}
       <div className="mb-3 rounded-2xl border border-neutral-200 p-3 dark:border-neutral-800">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 flex-1 min-w-[220px]">
@@ -672,94 +735,92 @@ export default function TradeCalculatorPage() {
         </div>
       </div>
 
+      {/* Tables */}
+      <PlayersTables
+        myPlayers={myPlayersVisible}
+        allPlayers={allPlayersVisible}
+        myPicks={myPicksVisible}
+        allPicks={allPicksVisible}
+        playersMeta={playersMeta}
+        rosterDefById={rosterDefById}
+        onReceivePlayer={onReceivePlayer}
+        onSendPlayer={onSendPlayer}
+        onReceivePick={onReceivePick}
+        onSendPick={onSendPick}
+        context={{
+          myPlayersShowSend: true,
+          allPlayersShowReceive: true,
+          myPicksShowSend: true,
+          allPicksShowReceive: true,
+        }}
+        middleContent={
+          <div className="mb-1 rounded-2xl border border-neutral-200 p-3 dark:border-neutral-800">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2 flex-1 min-w-[220px]">
+                <span className="i-lucide-search opacity-60" aria-hidden />
+                <input
+                  className="w-full bg-transparent outline-none rounded-md border px-3 py-2 dark:bg-neutral-900/60"
+                  placeholder="Search all players or picks…"
+                  value={allSearch}
+                  onChange={(e) => setAllSearch(e.target.value)}
+                />
+              </div>
 
+              <select
+                className="select select-bordered rounded-md dark:bg-neutral-900/60"
+                value={allPos}
+                onChange={(e) => setAllPos(e.target.value)}
+                title="Position filter (multi-pos aware)"
+              >
+                <option value="all">All positions</option>
+                <option value="QB">QB</option><option value="RB">RB</option>
+                <option value="WR">WR</option><option value="TE">TE</option>
+                <option value="DL">DL</option><option value="LB">LB</option>
+                <option value="DB">DB</option><option value="K">K</option>
+                <option value="DEF">DEF</option>
+              </select>
 
-      {/* Tables (UNCHANGED) */}
-<PlayersTables
-  myPlayers={myPlayersFiltered}
-  allPlayers={allPlayersFiltered}
-  myPicks={myPicksFiltered}
-  allPicks={allPicksFiltered}
-  playersMeta={playersMeta}
-  rosterDefById={rosterDefById}
-  onReceivePlayer={onReceivePlayer}
-  onSendPlayer={onSendPlayer}
-  onReceivePick={onReceivePick}
-  onSendPick={onSendPick}
-  context={{
-    myPlayersShowSend: true,
-    allPlayersShowReceive: true,
-    myPicksShowSend: true,
-    allPicksShowReceive: true,
-  }}
-  middleContent={
-    <div className="mb-1 rounded-2xl border border-neutral-200 p-3 dark:border-neutral-800">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2 flex-1 min-w-[220px]">
-          <span className="i-lucide-search opacity-60" aria-hidden />
-          <input
-            className="w-full bg-transparent outline-none rounded-md border px-3 py-2 dark:bg-neutral-900/60"
-            placeholder="Search all players or picks…"
-            value={allSearch}
-            onChange={(e) => setAllSearch(e.target.value)}
-          />
-        </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs opacity-70">Team</label>
+                <select
+                  className="select select-bordered rounded-md dark:bg-neutral-900/60"
+                  value={allTeamRosterId}
+                  onChange={(e) => setAllTeamRosterId(e.target.value)}
+                  title="Filter by Sleeper roster"
+                >
+                  <option value="all">All</option>
+                  {teamOptions.map(({ rid, code }) => (
+                    <option key={rid} value={rid}>{code}</option>
+                  ))}
+                </select>
+              </div>
 
-        <select
-          className="select select-bordered rounded-md dark:bg-neutral-900/60"
-          value={allPos}
-          onChange={(e) => setAllPos(e.target.value)}
-          title="Position filter (multi-pos aware)"
-        >
-          <option value="all">All positions</option>
-          <option value="QB">QB</option><option value="RB">RB</option>
-          <option value="WR">WR</option><option value="TE">TE</option>
-          <option value="DL">DL</option><option value="LB">LB</option>
-          <option value="DB">DB</option><option value="K">K</option>
-          <option value="DEF">DEF</option>
-        </select>
+              <div className="flex items-center gap-2">
+                <span className="text-xs opacity-70">≥</span>
+                <input
+                  type="number"
+                  className="w-16 rounded-md border px-2 py-1 dark:bg-neutral-900/60"
+                  value={allValMin}
+                  min={0}
+                  max={1000}
+                  onChange={(e) => setAllValMin(Math.min(Number(e.target.value) || 0, allValMax))}
+                />
+                <span className="text-xs opacity-70">≤</span>
+                <input
+                  type="number"
+                  className="w-16 rounded-md border px-2 py-1 dark:bg-neutral-900/60"
+                  value={allValMax}
+                  min={0}
+                  max={1000}
+                  onChange={(e) => setAllValMax(Math.max(Number(e.target.value) || 0, allValMin))}
+                />
+              </div>
+            </div>
+          </div>
+        }
+      />
 
-        <div className="flex items-center gap-2">
-          <label className="text-xs opacity-70">Team</label>
-          <select
-            className="select select-bordered rounded-md dark:bg-neutral-900/60"
-            value={allTeamRosterId}
-            onChange={(e) => setAllTeamRosterId(e.target.value)}
-            title="Filter by Sleeper roster"
-          >
-            <option value="all">All</option>
-            {teamOptions.map(({ rid, code }) => (
-              <option key={rid} value={rid}>{code}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span className="text-xs opacity-70">≥</span>
-          <input
-            type="number"
-            className="w-16 rounded-md border px-2 py-1 dark:bg-neutral-900/60"
-            value={allValMin}
-            min={0}
-            max={1000}
-            onChange={(e) => setAllValMin(Math.min(Number(e.target.value) || 0, allValMax))}
-          />
-          <span className="text-xs opacity-70">≤</span>
-          <input
-            type="number"
-            className="w-16 rounded-md border px-2 py-1 dark:bg-neutral-900/60"
-            value={allValMax}
-            min={0}
-            max={1000}
-            onChange={(e) => setAllValMax(Math.max(Number(e.target.value) || 0, allValMin))}
-          />
-        </div>
-      </div>
-    </div>
-  }
-/>
-
-      {/* Trade summary + controls (unchanged) */}
+      {/* Trade summary + controls */}
       <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3">
           <div className="flex items-center justify-between mb-2">
@@ -799,7 +860,7 @@ export default function TradeCalculatorPage() {
                   <span className="truncate">{a.label}</span>
                   <div className="flex items-center gap-3">
                     <span className="text-xs text-neutral-500">{num(a?.val).toFixed(0)}</span>
-                    <button className="btn btn-xs rounded-md" onClick={() => removeFromSide("B", a.id)}>
+                    <button className="btn className=btn-xs rounded-md" onClick={() => removeFromSide("B", a.id)}>
                       remove
                     </button>
                   </div>
@@ -810,7 +871,7 @@ export default function TradeCalculatorPage() {
         </div>
       </div>
 
-      {/* Footer actions + grade (unchanged) */}
+      {/* Footer actions + grade */}
       <div className="mt-4 flex flex-col md:flex-row items-start md:items-center gap-3">
         <button className="btn rounded-md" onClick={clearAll}>Clear All</button>
         <div className="ml-auto rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 w-full md:w-auto">
